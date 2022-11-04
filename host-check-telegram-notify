@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-import subprocess
 import requests
 from datetime import timedelta, datetime
+from pytz import timezone
 
 MY_ADDR = "IP_TO_CHECK"
 
@@ -26,21 +26,27 @@ h_all = h_auth | h_json
 
 # get all incidents
 inc_all = requests.get(url_inc, headers=h_auth).json()
+
 name_of_monitor = "The name to check"
 
+# expected format of all dates here - UTC
 for id in inc_all['data']:
     started_at = id['attributes']['started_at']
     name = id['attributes']['name']
     resolved_at = id['attributes']['resolved_at']
     acknowledged_at = id['attributes']['acknowledged_at']
     if name == name_of_monitor:
-        if resolved_at and acknowledged_at:
-            print("The failure is gone, checking how old the incident is and send message if needed")
+        if resolved_at:
             dt = datetime.strptime(resolved_at, '%Y-%m-%dT%H:%M:%S.%fZ')
-#        url_ack = "https://betteruptime.com/api/v2/incidents/%s/acknowledge" % id['id']
-#
-#        started_at = id['attributes']['started_at']
-#        # send telegram notification
-#        send_msg("Вітаю! Зникло світло в під'їзді з %s" % started_at)
-#        # acknowledge incident
-#        ack_inc = requests.post(url_ack, headers=h_all)
+            if (today-dt).total_seconds() < 61:
+                dt1 = dt.replace(tzinfo=timezone('UTC')).astimezone(timezone('Europe/Kyiv')).strftime("%Y-%m-%d %H:%M:%S")
+                send_msg("Event on incident resolved at %s" % dt1)
+        else:
+            if not acknowledged_at:
+                url_ack = "https://betteruptime.com/api/v2/incidents/%s/acknowledge" % id['id']
+                # acknowledge incident
+                ack_inc = requests.post(url_ack, headers=h_all)
+                st2 = datetime.strptime(started_at, '%Y-%m-%dT%H:%M:%S.%fZ')
+                dt2 = st2.replace(tzinfo=timezone('UTC')).astimezone(timezone('Europe/Kyiv')).strftime("%Y-%m-%d %H:%M:%S")
+                # send telegram notification
+                send_msg("Event on new incident at %s" % dt2)
