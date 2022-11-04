@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import subprocess
 import requests
+from datetime import timedelta, datetime
 
 MY_ADDR = "IP_TO_CHECK"
 
@@ -9,15 +10,37 @@ def send_msg(text):
    chat_id = "CHAT_ID"
    url_req = "https://api.telegram.org/bot" + token + "/sendMessage" + "?chat_id=" + chat_id + "&text=" + text
    results = requests.get(url_req)
-   print(results.json())
+   #print(results.json())
 
 # check part
-max_tries = 4
-for _ in range(max_tries):
-    command = ['ping', '-n', '-c', '10', MY_ADDR]
-    proc = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if proc.returncode == 0:
-        send_msg("Host is available")
-        break
-    else:
-        send_msg("Host is down")
+# getting UTC, so that later we compare with UTC
+today = datetime.utcnow()
+yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+url_inc = "https://betteruptime.com/api/v2/incidents?from=%s&to=now" % yesterday
+
+bt_token = "BetterUptimeToken"
+h_auth = {"authorization": "Bearer %s" % bt_token}
+h_json = {"Content-Type": "application/json"}
+# merge two dicts, works in >=python 3.9
+h_all = h_auth | h_json
+
+# get all incidents
+inc_all = requests.get(url_inc, headers=h_auth).json()
+name_of_monitor = "The name to check"
+
+for id in inc_all['data']:
+    started_at = id['attributes']['started_at']
+    name = id['attributes']['name']
+    resolved_at = id['attributes']['resolved_at']
+    acknowledged_at = id['attributes']['acknowledged_at']
+    if name == name_of_monitor:
+        if resolved_at and acknowledged_at:
+            print("The failure is gone, checking how old the incident is and send message if needed")
+            dt = datetime.strptime(resolved_at, '%Y-%m-%dT%H:%M:%S.%fZ')
+#        url_ack = "https://betteruptime.com/api/v2/incidents/%s/acknowledge" % id['id']
+#
+#        started_at = id['attributes']['started_at']
+#        # send telegram notification
+#        send_msg("Вітаю! Зникло світло в під'їзді з %s" % started_at)
+#        # acknowledge incident
+#        ack_inc = requests.post(url_ack, headers=h_all)
