@@ -39,7 +39,7 @@ for id in inc_all['data']:
             dt = datetime.strptime(resolved_at, '%Y-%m-%dT%H:%M:%S.%fZ')
             if (today-dt).total_seconds() < 61:
                 dt1 = dt.replace(tzinfo=timezone('UTC')).astimezone(timezone('Europe/Kyiv')).strftime("%Y-%m-%d %H:%M")
-                send_msg("\U0001f635 \U0001f56f \U0001fa94 \U0001f50b Event on incident resolved at %s" % dt1)
+                send_msg("\U0001f973 \U0001f4a1 \U0001f50c \U0001f4e1 Event on incident resolved at %s" % dt1)
         else:
             if not acknowledged_at:
                 url_ack = "https://betteruptime.com/api/v2/incidents/%s/acknowledge" % id['id']
@@ -48,4 +48,4 @@ for id in inc_all['data']:
                 st2 = datetime.strptime(started_at, '%Y-%m-%dT%H:%M:%S.%fZ')
                 dt2 = st2.replace(tzinfo=timezone('UTC')).astimezone(timezone('Europe/Kyiv')).strftime("%Y-%m-%d %H:%M")
                 # send telegram notification
-                send_msg("\U0001f973 \U0001f4a1 \U0001f50c \U0001f4e1 Event on new incident at %s" % dt2)
+                send_msg("\U0001f635 \U0001f56f \U0001fa94 \U0001f50b Event on new incident at %s" % dt2)
