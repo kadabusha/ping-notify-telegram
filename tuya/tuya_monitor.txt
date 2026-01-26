@@ -1,0 +1,19 @@
+# Telegram
+export TELEGRAM_TOKEN="TG:TOKEN"
+export TELEGRAM_CHAT_ID="-123"
+
+# Tuya
+export TUYA_ACCESS_ID="API_ID"
+export TUYA_ACCESS_KEY="API_KEY"
+export TUYA_REGION=eu
+
+# Monitor
+export TUYA_DEVICE_ID="DEV1"
+
+# comma separated list of devices to disable/enable
+export DISABLE_DEVICE_IDS="DEV2, DEV3, DEV4, DEV5"
+
+# retry parameters
+export INTERVAL=10
+export JITTER=2
+export CONFIRM_SECONDS=60
