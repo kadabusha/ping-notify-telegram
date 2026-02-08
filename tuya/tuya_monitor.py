@@ -22,8 +22,9 @@ DISABLE_DEVICE_IDS = [
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
-INTERVAL = int(os.getenv("INTERVAL", "10"))
-CONFIRM_SECONDS = int(os.getenv("CONFIRM_SECONDS", "60"))
+# original envs preserved
+INTERVAL = int(os.getenv("INTERVAL", "60"))          # base interval
+CONFIRM_SECONDS = int(os.getenv("CONFIRM_SECONDS", "60"))  # kept for compatibility
 JITTER = float(os.getenv("JITTER", "2"))
 
 BASE_URL = f"https://openapi.tuya{TUYA_REGION}.com"
@@ -36,8 +37,10 @@ logging.basicConfig(
 )
 log = logging.getLogger("tuya-monitor")
 
+
 def jlog(level, **payload):
     log.log(level, json.dumps(payload, ensure_ascii=False))
+
 
 # ===================== TUYA CLIENT =====================
 
@@ -92,15 +95,19 @@ class TuyaClient:
         data = r.json()
 
         if not data.get("success"):
+            jlog(logging.ERROR, event="tuya_token_refresh_failed", response=data)
             raise RuntimeError(data)
 
         self.token = data["result"]["access_token"]
-        self.token_expire = time.time() + data["result"]["expire_time"] - 60
+        self.token_expire = time.time() + int(data["result"]["expire_time"]) - 120
+
+        # log only on real refresh
         jlog(logging.INFO, event="tuya_token_refreshed")
 
     def ensure_token(self):
-        if not self.token or time.time() > self.token_expire:
-            self.refresh_token()
+        if self.token and time.time() < self.token_expire:
+            return
+        self.refresh_token()
 
     def get_device_online(self, device_id):
         self.ensure_token()
@@ -158,6 +165,7 @@ class TuyaClient:
 
         jlog(logging.INFO, event="tuya_switch_set", device=device_id, value=value)
 
+
 # ===================== TELEGRAM =====================
 
 def telegram(text):
@@ -166,17 +174,18 @@ def telegram(text):
         json={"chat_id": TELEGRAM_CHAT_ID, "text": text},
         timeout=10,
     )
-    if r.ok:
-        jlog(logging.INFO, event="telegram_sent")
-    else:
+    if not r.ok:
         jlog(logging.ERROR, event="telegram_failed", status=r.status_code)
 
-# ===================== MAIN LOOP =====================
+
+# ===================== MAIN LOOP (OPTION A) =====================
 
 def main():
     client = TuyaClient()
+
     last_state = None
-    heartbeat_logged = None  # Track last logged online/offline state
+    last_seen_online = None
+    devices_disabled = False
 
     jlog(logging.INFO, event="monitor_started")
 
@@ -184,57 +193,45 @@ def main():
         try:
             online = client.get_device_online(TUYA_DEVICE_ID)
 
-            # Only log heartbeat on state change
-            if heartbeat_logged is None or online != heartbeat_logged:
+            # heartbeat logging only on change
+            if online != last_seen_online:
                 jlog(logging.INFO, event="heartbeat", online=online)
-                heartbeat_logged = online
+                last_seen_online = online
 
-            # First iteration
             if last_state is None:
                 last_state = online
 
-            # State changed
-            elif online != last_state:
-                jlog(
-                    logging.INFO,
-                    event="confirm_window_started",
-                    target_state=online,
-                    seconds=CONFIRM_SECONDS,
-                )
+            # transition logic
+            if online != last_state:
+                if not online:
+                    telegram("⚠️ Світла нема")
+                    for dev in DISABLE_DEVICE_IDS:
+                        client.set_switch(dev, False)
+                    devices_disabled = True
+                    jlog(logging.INFO, event="devices_disabled")
+                else:
+                    telegram("✅ Світло є")
+                    # no re-enable (handled by Tuya automation)
+                    devices_disabled = False
+                    jlog(logging.INFO, event="power_restored")
 
-                # Wait for CONFIRM_SECONDS and re-check
-                end_time = time.time() + CONFIRM_SECONDS
-                confirmed = False
-                while time.time() < end_time:
-                    time.sleep(5 + random.uniform(0, 2))
-                    try:
-                        check = client.get_device_online(TUYA_DEVICE_ID)
-                        if check == online:
-                            confirmed = True
-                            break
-                    except Exception:
-                        pass
+                last_state = online
 
-                if confirmed:
-                    if not online:
-                        telegram(f"⚠️ Monitor OFFLINE — disabling devices")
-                        for d in DISABLE_DEVICE_IDS:
-                            client.set_switch(d, False)
-                    else:
-                        telegram(f"✅ Monitor ONLINE — enabling devices")
-                        for d in DISABLE_DEVICE_IDS:
-                            client.set_switch(d, True)
-                        # Enable the monitored device itself
-                        client.set_switch(TUYA_DEVICE_ID, True)
+            # adaptive polling using existing INTERVAL
+            if online:
+                sleep_time = INTERVAL
+            else:
+                if devices_disabled:
+                    sleep_time = INTERVAL * 5   # slow mode
+                else:
+                    sleep_time = INTERVAL
 
-                    last_state = online
-                    heartbeat_logged = online  # Ensure correct heartbeat logging
+            time.sleep(sleep_time + random.uniform(0, JITTER))
 
-            time.sleep(INTERVAL + random.uniform(0, JITTER))
-
-        except Exception as e:
-            jlog(logging.ERROR, event="monitor_error", error=str(e))
+        except Exception as exc:
+            jlog(logging.ERROR, event="monitor_error", error=str(exc))
             time.sleep(INTERVAL)
+
 
 if __name__ == "__main__":
     main()
