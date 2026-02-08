@@ -1,6 +1,8 @@
 # Telegram
 export TELEGRAM_TOKEN="TG:TOKEN"
 export TELEGRAM_CHAT_ID="-123"
+# test chat
+export TELEGRAM_CHAT_ID_DEBUG="-321"
 
 # Tuya
 export TUYA_ACCESS_ID="API_ID"
@@ -17,3 +19,10 @@ export DISABLE_DEVICE_IDS="DEV2, DEV3, DEV4, DEV5"
 export INTERVAL=10
 export JITTER=2
 export CONFIRM_SECONDS=60
+
+# ping parameters
+export PING_TARGET_HOST="192.168.2.3"
+export PING_INTERVAL=10
+export PING_CONFIRM_COUNT=10
+export API_OFFLINE_INTERVAL=300
+
