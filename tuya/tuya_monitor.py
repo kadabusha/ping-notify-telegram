@@ -19,9 +19,7 @@ TUYA_ACCESS_ID = os.environ["TUYA_ACCESS_ID"]
 TUYA_ACCESS_KEY = os.environ["TUYA_ACCESS_KEY"]
 TUYA_DEVICE_ID = os.environ["TUYA_DEVICE_ID"]
 
-DISABLE_DEVICE_IDS = [
-    d.strip() for d in os.getenv("DISABLE_DEVICE_IDS", "").split(",") if d.strip()
-]
+DISABLE_DEVICE_IDS = [d.strip() for d in os.getenv("DISABLE_DEVICE_IDS", "").split(",") if d.strip()]  # noqa: E501  # pylint: disable=C0301
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
@@ -143,6 +141,7 @@ def ping_once(host):
         return None
 
 
+# pylint: disable=too-many-nested-blocks
 def ping_confirm(host):
     """
     Confirm outage using a single ping invocation with multiple packets.
@@ -152,8 +151,8 @@ def ping_confirm(host):
         # -c N: send N packets
         # -i 1: 1s between packets (avoid flood)
         # -W 1: 1s per-reply timeout (Linux ping)
-        cmd = ["ping", "-c", str(PING_CONFIRM_COUNT), "-i", "1", "-W", "1", host]
-        jlog(logging.INFO, event="ping_confirm_run", host=host, cmd=" ".join(cmd))
+        cmd = ["ping", "-c", str(PING_CONFIRM_COUNT), "-i", "1", "-W", "1", host]  # noqa: E501  # pylint: disable=C0301
+        jlog(logging.INFO, event="ping_confirm_run", host=host, cmd=" ".join(cmd))  # noqa: E501  # pylint: disable=C0301
 
         result = subprocess.run(
             cmd,
@@ -201,7 +200,7 @@ def ping_confirm(host):
         return received > 0
 
     except (OSError, subprocess.SubprocessError) as exc:
-        jlog(logging.WARNING, event="ping_confirm_error", host=host, error=str(exc))
+        jlog(logging.WARNING, event="ping_confirm_error", host=host, error=str(exc))  # noqa: E501  # pylint: disable=C0301
         return None
 
 
@@ -338,28 +337,40 @@ class TuyaClient:
             device=device_id,
         )
 
-        r = requests.post(
-            BASE_URL + path,
-            data=body,
-            headers={
-                "client_id": TUYA_ACCESS_ID,
-                "access_token": self.token,
-                "sign": sign,
-                "t": t,
-                "sign_method": "HMAC-SHA256",
-                "Content-Type": "application/json",
-            },
-            timeout=10,
-        )
-
-        data = r.json()
+        try:
+            r = requests.post(
+                BASE_URL + path,
+                data=body,
+                headers={
+                    "client_id": TUYA_ACCESS_ID,
+                    "access_token": self.token,
+                    "sign": sign,
+                    "t": t,
+                    "sign_method": "HMAC-SHA256",
+                    "Content-Type": "application/json",
+                },
+                timeout=10,
+            )
+            data = r.json()
+        except requests.RequestException as exc:
+            notify_error("tuya_switch_request", exc, {"device": device_id})
+            raise
+        except ValueError as exc:
+            # JSON parse error
+            error_text = getattr(r, "text", None)
+            notify_error(
+                "tuya_switch_response_parse",
+                exc,
+                {"device": device_id, "text": error_text},
+            )
+            raise RuntimeError(exc) from exc
 
         if not data.get("success"):
             msg = str(data).lower()
             if "already" in msg or "offline" in msg:
                 return
             notify_error("tuya_switch", "failed", data)
-            raise RuntimeError(data)
+            raise RuntimeError(data)  # pylint: disable=raise-missing-from
 
         jlog(
             logging.INFO,
@@ -371,7 +382,7 @@ class TuyaClient:
 
 # ===================== MAIN LOOP =====================
 
-# pylint: disable=too-many-branches,too-many-statements
+# pylint: disable=too-many-branches,too-many-statements,too-many-nested-blocks
 def main():
     """Main monitoring loop."""
     client = TuyaClient()
@@ -400,7 +411,7 @@ def main():
 
                 if ping_ok is False:
                     # Only run confirm when we were previously online/unknown.
-                    # If we're already offline, keep it lightweight: one ping per loop.
+                    # If already offline, send one ping per loop.
                     if last_state is not False:
                         jlog(
                             logging.INFO,
@@ -409,7 +420,7 @@ def main():
                             confirm_count=PING_CONFIRM_COUNT,
                         )
                         confirm_res = ping_confirm(PING_TARGET_HOST)
-                        # ping_confirm returns True/False or None (if ping broken)
+                        # ping_confirm returns True/False or None
                         if confirm_res is None:
                             online = client.get_device_online(
                                 TUYA_DEVICE_ID,
@@ -537,13 +548,25 @@ def main():
                 for dev in DISABLE_DEVICE_IDS:
                     try:
                         client.set_switch(dev, True)
-                    except RuntimeError:
-                        pass
+                    except (RuntimeError, requests.RequestException) as exc:
+                        jlog(
+                            logging.WARNING,
+                            event="tuya_enable_failed",
+                            device=dev,
+                            error=str(exc),
+                        )
+                    # small delay between enabling devices
+                    time.sleep(15)
 
                 try:
                     client.set_switch(TUYA_DEVICE_ID, True)
-                except RuntimeError:
-                    pass
+                except (RuntimeError, requests.RequestException) as exc:
+                    jlog(
+                        logging.WARNING,
+                        event="tuya_enable_primary_failed",
+                        device=TUYA_DEVICE_ID,
+                        error=str(exc),
+                    )
 
                 restore_handled = True
                 outage_handled = False
