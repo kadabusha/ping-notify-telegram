@@ -269,16 +269,36 @@ class TuyaClient:
             raise RuntimeError(data)
 
         self.token = data["result"]["access_token"]
-        self.token_expire = (
-            time.time() + int(data["result"]["expire_time"]) - 120
+        expire_time = int(data["result"]["expire_time"])
+        # Tuya API returns expire_time in seconds
+        # Apply 2-minute buffer before actual expiry to avoid edge cases
+        self.token_expire = time.time() + expire_time - 120
+        jlog(
+            logging.INFO,
+            event="tuya_token_refreshed",
+            expire_time_sec=expire_time,
+            valid_for_sec=expire_time - 120,
         )
-
-        jlog(logging.INFO, event="tuya_token_refreshed")
 
     def ensure_token(self):
         """Ensure valid token."""
-        if self.token and time.time() < self.token_expire:
+        now = time.time()
+        time_until_expiry = self.token_expire - now if self.token else -1
+        if self.token and now < self.token_expire:
+            jlog(
+                logging.INFO,
+                event="token_check",
+                result="valid",
+                time_until_expiry_sec=int(time_until_expiry),
+            )
             return
+        jlog(
+            logging.INFO,
+            event="token_check",
+            result="refreshing",
+            has_token=bool(self.token),
+            time_until_expiry_sec=int(time_until_expiry),
+        )
         self.refresh_token()
 
     def get_device_online(self, device_id, reason=None):
