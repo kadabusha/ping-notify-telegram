@@ -527,6 +527,19 @@ def main():
                 time.sleep(PING_INTERVAL)
                 continue
 
+            # Detect state change and reset handled flags accordingly
+            if online != last_state:
+                if online:
+                    # Transitioned to online
+                    restore_handled = False
+                    outage_handled = True
+                else:
+                    # Transitioned to offline
+                    outage_handled = False
+                    restore_handled = True
+
+            last_state = online
+
             # ---- OUTAGE ----
             if not online and not outage_handled:
                 telegram_main("⚠️ Світла нема")
@@ -539,7 +552,6 @@ def main():
 
                 outage_handled = True
                 restore_handled = False
-                last_state = online
 
             # ---- RESTORE ----
             elif online and not restore_handled:
@@ -570,7 +582,6 @@ def main():
 
                 restore_handled = True
                 outage_handled = False
-                last_state = online
 
             time.sleep(PING_INTERVAL)
 
