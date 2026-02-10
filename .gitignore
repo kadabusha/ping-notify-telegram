@@ -127,3 +127,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+tuya/tuya_monitor.txt
+*.lock
