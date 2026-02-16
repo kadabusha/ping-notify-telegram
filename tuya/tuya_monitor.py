@@ -33,6 +33,7 @@ PING_TARGET_HOST = os.getenv("PING_TARGET_HOST")
 PING_INTERVAL = int(os.getenv("PING_INTERVAL", "10"))
 PING_CONFIRM_COUNT = int(os.getenv("PING_CONFIRM_COUNT", "10"))
 API_OFFLINE_INTERVAL = int(os.getenv("API_OFFLINE_INTERVAL", "300"))
+API_RETRY_DELAY = int(os.getenv("API_RETRY_DELAY", "30"))
 
 BASE_URL = f"https://openapi.tuya{TUYA_REGION}.com"
 
@@ -142,7 +143,7 @@ def ping_once(host):
 
 
 # pylint: disable=too-many-nested-blocks
-def ping_confirm(host):
+def ping_confirm(host, count=None):
     """
     Confirm outage using a single ping invocation with multiple packets.
     Returns True if ANY packet is received.
@@ -151,8 +152,14 @@ def ping_confirm(host):
         # -c N: send N packets
         # -i 1: 1s between packets (avoid flood)
         # -W 1: 1s per-reply timeout (Linux ping)
-        cmd = ["ping", "-c", str(PING_CONFIRM_COUNT), "-i", "1", "-W", "1", host]  # noqa: E501  # pylint: disable=C0301
-        jlog(logging.INFO, event="ping_confirm_run", host=host, cmd=" ".join(cmd))  # noqa: E501  # pylint: disable=C0301
+        use_count = PING_CONFIRM_COUNT if count is None else int(count)
+        cmd = ["ping", "-c", str(use_count), "-i", "1", "-W", "1", host]
+        jlog(
+            logging.INFO,
+            event="ping_confirm_run",
+            host=host,
+            cmd=" ".join(cmd),
+        )
 
         result = subprocess.run(
             cmd,
@@ -193,7 +200,7 @@ def ping_confirm(host):
             logging.INFO,
             event="ping_confirm_summary",
             host=host,
-            transmitted=PING_CONFIRM_COUNT,
+            transmitted=use_count,
             received=received,
             returncode=result.returncode,
         )
@@ -202,6 +209,67 @@ def ping_confirm(host):
     except (OSError, subprocess.SubprocessError) as exc:
         jlog(logging.WARNING, event="ping_confirm_error", host=host, error=str(exc))  # noqa: E501  # pylint: disable=C0301
         return None
+
+
+def confirm_offline_status(client, host, device_id, last_online):
+    """
+    Delayed-retry confirmation: run 3 multi-packet ping confirmations,
+    then API check if needed.
+
+    Returns:
+        True if online, False if offline, or last_online if API fails
+        (keep state).
+    """
+    # Run 3 confirmatory ping checks. If any succeeds, we're online.
+    for attempt in range(1, 4):
+        jlog(
+            logging.INFO,
+            event="confirm_offline_attempt",
+            attempt=attempt,
+            host=host,
+            packets=PING_CONFIRM_COUNT,
+        )
+        ping_result = ping_confirm(host, PING_CONFIRM_COUNT)
+        if ping_result is True:
+            jlog(
+                logging.INFO,
+                event="confirm_offline_result",
+                host=host,
+                status="online_via_ping",
+            )
+            return True  # Online
+
+    # All pings failed. Verify with API call.
+    jlog(
+        logging.INFO,
+        event="confirm_offline_via_api",
+        device=device_id,
+    )
+    try:
+        online = client.get_device_online(
+            device_id,
+            reason="offline_confirmation",
+        )
+        jlog(
+            logging.INFO,
+            event="confirm_offline_result",
+            device=device_id,
+            status="online" if online else "offline",
+        )
+        return online
+    except (requests.RequestException, RuntimeError) as exc:
+        jlog(
+            logging.WARNING,
+            event="confirm_offline_api_error",
+            device=device_id,
+            error=str(exc),
+        )
+        telegram_debug(
+            f"⚠️ API Error during offline check\n"
+            f"Device: {device_id}\nError: {str(exc)[:200]}"
+        )
+        # API error -> keep current state
+        return last_online
 
 
 # ===================== TUYA CLIENT =====================
@@ -406,11 +474,13 @@ class TuyaClient:
 def main():
     """Main monitoring loop."""
     client = TuyaClient()
+    client.ensure_token()
 
     last_state = None
     outage_handled = False
     restore_handled = False
-    last_api_check = 0
+    last_api_check = time.time()
+    last_api_retry_time = None  # Track when to retry after offline confirmed
 
     jlog(logging.INFO, event="monitor_started")
 
@@ -419,7 +489,7 @@ def main():
             online = None
             now = time.time()
 
-            # ---- PING PRIMARY ----
+            # ---- PING PRIMARY DETECTION ----
             if PING_TARGET_HOST:
                 ping_ok = ping_once(PING_TARGET_HOST)
                 jlog(
@@ -429,55 +499,8 @@ def main():
                     result=ping_ok,
                 )
 
-                if ping_ok is False:
-                    # Only run confirm when we were previously online/unknown.
-                    # If already offline, send one ping per loop.
-                    if last_state is not False:
-                        jlog(
-                            logging.INFO,
-                            event="probe_ping_confirm_start",
-                            host=PING_TARGET_HOST,
-                            confirm_count=PING_CONFIRM_COUNT,
-                        )
-                        confirm_res = ping_confirm(PING_TARGET_HOST)
-                        # ping_confirm returns True/False or None
-                        if confirm_res is None:
-                            online = client.get_device_online(
-                                TUYA_DEVICE_ID,
-                                reason="ping_confirm_unavailable",
-                            )
-                            jlog(
-                                logging.INFO,
-                                event="probe_decision",
-                                source="tuya_api_fallback",
-                                online=online,
-                                reason="ping_confirm_unavailable",
-                            )
-                        else:
-                            online = confirm_res
-                            jlog(
-                                logging.INFO,
-                                event="probe_ping_confirm_result",
-                                host=PING_TARGET_HOST,
-                                online=online,
-                            )
-                            jlog(
-                                logging.INFO,
-                                event="probe_decision",
-                                source="ping_confirm",
-                                online=online,
-                            )
-                    else:
-                        online = False
-                        jlog(
-                            logging.INFO,
-                            event="probe_decision",
-                            source="ping",
-                            online=online,
-                            reason="already_offline_single_ping_failed",
-                        )
-
-                elif ping_ok is True:
+                if ping_ok is True:
+                    # Ping succeeded, we're online
                     online = True
                     jlog(
                         logging.INFO,
@@ -485,7 +508,24 @@ def main():
                         source="ping",
                         online=online,
                     )
+
+                elif ping_ok is False:
+                    # Ping failed. Confirm with multiple attempts.
+                    online = confirm_offline_status(
+                        client,
+                        PING_TARGET_HOST,
+                        TUYA_DEVICE_ID,
+                        last_state,
+                    )
+                    jlog(
+                        logging.INFO,
+                        event="probe_decision",
+                        source="ping_confirm",
+                        online=online,
+                    )
+
                 else:
+                    # Ping command unavailable, fall back to API
                     online = client.get_device_online(
                         TUYA_DEVICE_ID,
                         reason="ping_unavailable",
@@ -498,6 +538,7 @@ def main():
                         reason="ping_unavailable",
                     )
             else:
+                # Ping disabled, use API only
                 online = client.get_device_online(
                     TUYA_DEVICE_ID,
                     reason="ping_disabled",
@@ -509,6 +550,43 @@ def main():
                     online=online,
                     reason="ping_disabled",
                 )
+
+            # ---- DELAYED RETRY AFTER OFFLINE CONFIRMATION ----
+            # If we recently confirmed offline and waited API_RETRY_DELAY,
+            # retry the whole failure detection process.
+            if (
+                last_api_retry_time is not None
+                and now >= last_api_retry_time
+            ):
+                jlog(
+                    logging.INFO,
+                    event="offline_retry_attempt",
+                    host=PING_TARGET_HOST,
+                    device=TUYA_DEVICE_ID,
+                )
+                # Re-run the failure detection process
+                online = confirm_offline_status(
+                    client,
+                    PING_TARGET_HOST,
+                    TUYA_DEVICE_ID,
+                    last_state,
+                )
+                last_api_retry_time = None  # Reset for next retry cycle
+                jlog(
+                    logging.INFO,
+                    event="probe_decision",
+                    source="offline_retry",
+                    online=online,
+                )
+
+                if not online:
+                    # Still offline, schedule another retry
+                    last_api_retry_time = now + API_RETRY_DELAY
+                    jlog(
+                        logging.INFO,
+                        event="offline_still_confirmed",
+                        schedule_next_retry=last_api_retry_time,
+                    )
 
             # ---- API SAFETY CHECK WHEN OFFLINE ----
             if not online and (now - last_api_check) > API_OFFLINE_INTERVAL:
@@ -530,6 +608,9 @@ def main():
                         device=TUYA_DEVICE_ID,
                         online=online,
                     )
+                    # If confirmed offline, schedule retry
+                    if not online:
+                        last_api_retry_time = now + API_RETRY_DELAY
                 except (requests.RequestException, RuntimeError) as exc:
                     jlog(
                         logging.WARNING,
@@ -537,6 +618,14 @@ def main():
                         device=TUYA_DEVICE_ID,
                         error=str(exc),
                     )
+                    telegram_debug(
+                        f"⚠️ API Error (safety check)\n"
+                        f"Device: {TUYA_DEVICE_ID}\n"
+                        f"Error: {str(exc)[:200]}"
+                    )
+                    # API error: keep current state, schedule retry
+                    online = last_state
+                    last_api_retry_time = now + API_RETRY_DELAY
 
             jlog(logging.INFO, event="heartbeat", online=online)
 
