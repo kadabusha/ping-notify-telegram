@@ -486,25 +486,15 @@ def main():
                     )
 
                 elif ping_ok is False:
-                    # Ping failed. Confirm with 3 more probes.
-                    is_online = confirm_offline_status(
-                        PING_TARGET_HOST,
-                        3,
-                    )
-
-                    if is_online:
-                        # At least one of 3 probes succeeded (network glitch)
-                        online = True
-                        consecutive_failures = 0
-                    else:
-                        # All 3 probes failed -> increment failure counter
-                        consecutive_failures += 1
-                        online = consecutive_failures < 6
+                    # Ping failed. Just count it (no heavy confirmation).
+                    # After 9 failures (90 seconds), declare offline.
+                    consecutive_failures += 1
+                    online = consecutive_failures < 9
 
                     jlog(
                         logging.INFO,
                         event="probe_decision",
-                        source="ping_confirm",
+                        source="quick_ping",
                         online=online,
                         consecutive_failures=consecutive_failures,
                     )
@@ -547,7 +537,7 @@ def main():
             # ---- API PERIODIC CHECK (EVERY 5 MIN WHEN OFFLINE) ----
             if (
                 not online
-                and consecutive_failures >= 6
+                and consecutive_failures >= 9
                 and (now - last_api_check) > API_OFFLINE_INTERVAL
             ):
                 jlog(
@@ -596,8 +586,8 @@ def main():
 
             last_state = online
 
-            # ---- OUTAGE (after 6 consecutive ping failures) ----
-            if not online and not outage_handled and consecutive_failures >= 6:
+            # ---- OUTAGE (after 9 consecutive ping failures = 90 seconds) ----
+            if not online and not outage_handled and consecutive_failures >= 9:
                 telegram_main("⚠️ Світла нема")
 
                 for dev in DISABLE_DEVICE_IDS:
